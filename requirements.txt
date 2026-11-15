@@ -3,3 +3,4 @@ altair
 plotly
 streamlit>=1.55
 requests
+scipy

@@ -9,9 +9,6 @@ Dashboard interativo para exploração dos microdados do ENEM com foco nos parti
 ## Pré-requisitos
 
 - Python 3.10 ou superior
-- Arquivos CSV dos microdados do ENEM (2021, 2022 e/ou 2023)
-  - Download disponível em: https://www.gov.br/inep/pt-br/acesso-a-informacao/dados-abertos/microdados/enem
-
 ---
 
 ## Instalação
@@ -36,9 +33,23 @@ pip install -r requirements.txt
 
 ## Dados
 
+Os arquivos de microdados já estão incluídos na pasta `data/` do projeto, prontos para uso:
+
+```
+data/
+├── MICRODADOS_ENEM_2021.csv
+├── MICRODADOS_ENEM_2022.csv
+└── MICRODADOS_ENEM_2023.csv
+```
+
+Não é necessário nenhum download adicional para executar o dashboard.
+
+### Caso precise reobter os dados
+
 O dashboard suporta as edições de **2021, 2022 e 2023** — individualmente ou em conjunto. Para cada edição desejada:
 
-1. Baixe o ZIP dos microdados da edição correspondente no portal do INEP.
+1. Baixe o ZIP dos microdados da edição correspondente no portal do INEP:
+   - https://www.gov.br/inep/pt-br/acesso-a-informacao/dados-abertos/microdados/enem
 2. Extraia o arquivo. Dentro da subpasta `DADOS/` você encontrará o CSV principal:
 
 ```
@@ -47,14 +58,7 @@ microdados_enem_<ano>/
     └── MICRODADOS_ENEM_<ANO>.csv  ← copie este arquivo
 ```
 
-3. Copie o arquivo para a pasta `data/` do projeto, mantendo o nome original:
-
-```
-data/
-├── MICRODADOS_ENEM_2021.csv
-├── MICRODADOS_ENEM_2022.csv
-└── MICRODADOS_ENEM_2023.csv
-```
+3. Copie o arquivo para a pasta `data/` do projeto, mantendo o nome original.
 
 > **Nota:** não é necessário ter os três arquivos. O dashboard carrega automaticamente apenas as edições cujos arquivos estiverem presentes na pasta `data/`. Se algum arquivo estiver faltando, uma mensagem de erro indicará quais edições não foram encontradas.
 
