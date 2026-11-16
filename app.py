@@ -17,13 +17,6 @@ st.markdown(
     " section[data-testid='stSidebar'] .stMarkdown a { color: #ffffff; }"
     #" [data-testid='stMetricLabel'] * { font-weight: 700 !important; }"
     " .stMainBlockContainer { padding-top: 1rem !important; }"
-    # abas fixas no topo durante o scroll (logo abaixo do cabeçalho do Streamlit)
-    " div[data-testid='stTabs'] [role='tablist'] {"
-    "   position: sticky !important; top: 3.75rem; z-index: 999 !important;"
-    "   background-color: #ffffff;"
-    "   padding-top: 0.25rem;"
-    "   border-bottom: 1px solid rgba(49, 51, 63, 0.2);"
-    " }"
     "</style>",
     unsafe_allow_html=True,
 )
@@ -32,18 +25,24 @@ st.markdown(
 # CONSTANTES E MAPEAMENTOS
 # ============================================================
 
-COLUMNS = [
-    "TP_FAIXA_ETARIA", "TP_SEXO", "TP_COR_RACA", "TP_ESCOLA", "IN_TREINEIRO",
-    "TP_ST_CONCLUSAO",
-    "SG_UF_PROVA", "Q006",
-    "NO_MUNICIPIO_PROVA",
-    "CO_MUNICIPIO_ESC", "NO_MUNICIPIO_ESC", "SG_UF_ESC",
-    "NU_NOTA_CN", "NU_NOTA_CH", "NU_NOTA_LC", "NU_NOTA_MT", "NU_NOTA_REDACAO",
-    "TP_PRESENCA_CN", "TP_PRESENCA_CH", "TP_PRESENCA_LC", "TP_PRESENCA_MT",
-]
+# colunas, arquivos e parâmetros da amostra ficam em gerar_amostra.py (fonte única)
+from gerar_amostra import (
+    AMOSTRA_FILE, CALCULADORA_URL, COLUMNS, CONFIANCA_AMOSTRA, MARGEM_ERRO_AMOSTRA,
+    PARTICIPANTES_FILE, PROPORCAO_AMOSTRA, SEMENTE_AMOSTRA, TAMANHO_AMOSTRA,
+)
 
 NOTAS_COLS    = ["NU_NOTA_CN", "NU_NOTA_CH", "NU_NOTA_LC", "NU_NOTA_MT", "NU_NOTA_REDACAO"]
-PRESENCA_COLS = ["TP_PRESENCA_CN", "TP_PRESENCA_CH", "TP_PRESENCA_LC", "TP_PRESENCA_MT"]
+N_VARIAVEIS_ORIGINAIS = 76  # colunas do arquivo MICRODADOS_ENEM_2023.csv (INEP)
+
+# Proporção de pessoas autodeclaradas brancas no RS — Censo Demográfico 2022 (IBGE): 78,4%.
+# Fonte: https://agenciadenoticias.ibge.gov.br/agencia-noticias/2012-agenciade-noticias/noticias/38719-censo-2022-pela-primeira-vez-desde-1991a-maior-parte-da-populacao-do-brasil-se-declara-parda
+P0_BRANCOS_CENSO = 0.784
+IBGE_CENSO_RS_URL = "https://www.ibge.gov.br/cidades-e-estados/rs.html"
+MU0_MATEMATICA = 500  # média de referência da escala de notas do ENEM
+INEP_GUIA_NOTA_URL = (
+    "https://www.gov.br/inep/pt-br/centrais-de-conteudo/acervo-linha-editorial/publicacoes-institucionais/"
+    "avaliacoes-e-exames-da-educacao-basica/entenda-a-sua-nota-no-enem-guia-do-participante"
+)
 
 FAIXA_ETARIA_MAP = {
     1: "Menor de 17 anos", 2: "17 anos", 3: "18 anos", 4: "19 anos", 5: "20 anos",
@@ -202,41 +201,55 @@ def _interp_color(v, stops=None):
 # CARREGAMENTO E PRÉ-PROCESSAMENTO DOS DADOS
 # ============================================================
 
-DATA_FILE = "data/MICRODADOS_ENEM_2023.csv"
-
-if not __import__("pathlib").Path(DATA_FILE).exists():
+_faltando = [f for f in (PARTICIPANTES_FILE, AMOSTRA_FILE) if not __import__("pathlib").Path(f).exists()]
+if _faltando:
     st.error(
         "**Arquivo de dados não encontrado.**\n\n"
-        f"- `{DATA_FILE}`\n\n"
-        "Consulte o **README** para instruções de como obter os dados antes de executar o dashboard."
+        + "".join(f"- `{f}`\n" for f in _faltando)
+        + "\nConsulte o **README** para instruções de como obter os microdados"
+        + " e gerar os arquivos (`python gerar_amostra.py`) antes de executar o dashboard."
     )
     st.stop()
 
 
 @st.cache_data
-def get_enem_dataset(columns: tuple):
-    return pl.read_csv(DATA_FILE, separator=";", encoding="latin1", columns=list(columns))
+def get_participantes_dataset():
+    return pl.read_csv(PARTICIPANTES_FILE, separator=";")
 
 
-PRESENCA_FILTER = pl.all_horizontal([pl.col(c) == 1 for c in PRESENCA_COLS])
+@st.cache_data
+def get_amostra_dataset():
+    return pl.read_csv(AMOSTRA_FILE, separator=";")
 
-enem_df = get_enem_dataset(tuple(COLUMNS)).filter(pl.col("SG_UF_PROVA") == "RS")
 
-if enem_df.is_empty():
-    st.warning("Nenhum dado encontrado.")
-    st.stop()
-
-enem_participantes = enem_df.filter(PRESENCA_FILTER)
+# Participantes do RS presentes nas quatro provas objetivas (já filtrados por gerar_amostra.py).
+enem_participantes = get_participantes_dataset().select(COLUMNS)
 
 if enem_participantes.is_empty():
     st.warning("Nenhum participante efetivo encontrado.")
     st.stop()
 
-# Amostra aleatória simples (sem reposição) dos participantes.
-# Tamanho calculado com 95% de confiança, margem de erro de 2% e proporção de 50%.
-TAMANHO_AMOSTRA = 2_351
-SEMENTE_AMOSTRA = 42  # semente fixa para a amostra ser reprodutível
-enem_amostra = enem_participantes.sample(n=TAMANHO_AMOSTRA, with_replacement=False, seed=SEMENTE_AMOSTRA)
+# Amostra aleatória simples (sem reposição) dos participantes, gerada por gerar_amostra.py.
+# Os tipos das colunas são alinhados aos da população para que as análises se comportem igual.
+enem_amostra = get_amostra_dataset().select(COLUMNS).cast(dict(enem_participantes.schema))
+
+
+# ============================================================
+# FUNÇÕES AUXILIARES
+# ============================================================
+
+def _br(v: float, casas: int = 4) -> str:
+    """Formata número no padrão brasileiro (milhar com ponto, decimal com vírgula)."""
+    return f"{v:,.{casas}f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def _notas_validas(df: pl.DataFrame) -> pl.DataFrame:
+    """Regra única de notas: todas as notas registradas são consideradas, inclusive notas zero.
+    Mantém quem tem as cinco notas preenchidas (não nulas) e acrescenta NOTA_GERAL = média das cinco notas."""
+    return (
+        df.filter(pl.all_horizontal([pl.col(c).is_not_null() for c in NOTAS_COLS]))
+        .with_columns(pl.mean_horizontal(NOTAS_COLS).alias("NOTA_GERAL"))
+    )
 
 
 
@@ -260,43 +273,56 @@ tab_populacao, tab_amostra, tab_comparacao = st.tabs([
 # SEÇÕES REUTILIZÁVEIS (população e amostra)
 # ============================================================
 
-def _render_indicadores(kpis):
+def _render_indicadores(kpis, kpis_ref=None):
+    """KPIs gerais. Quando `kpis_ref` (população) é informado, cada métrica mostra o delta amostra − população."""
     st.divider()
     st.subheader(":material/leaderboard: Indicadores gerais")
+    if kpis_ref is not None:
+        st.caption(
+            "Os valores em cinza abaixo de cada indicador mostram a diferença **amostra − população**."
+        )
+
+    def _delta(chave, casas=2):
+        if kpis_ref is None:
+            return None
+        dv = kpis[chave] - kpis_ref[chave]
+        return f"{'+' if dv >= 0 else ''}{_br(dv, casas)}"
+
 
     col1, col2, col3 = st.columns(3)
     with col1:
         with st.container(border=True):
-            st.metric("Total de Participantes", f"{kpis['total_participantes']:,}")
+            st.metric("Total de Participantes", _br(kpis["total_participantes"], 0))
     with col2:
         with st.container(border=True):
             st.metric(
-                "Média Geral",
-                f"{kpis['media_geral']:.2f}",
+                "Média de todas as notas",
+                _br(kpis["media_geral"], 2),
+                delta=_delta("media_geral"), delta_color="off",
                 help=(
-                    "Média aritmética de todas as notas válidas dos participantes "
-                    "(presentes nas quatro provas objetivas), considerando as cinco áreas em conjunto: "
-                    "Ciências da Natureza, Ciências Humanas, Linguagens e Códigos, Matemática e Redação. "
-                    "Notas ausentes são descartadas."
+                    "Média aritmética de todas as notas válidas, considerando as cinco áreas em conjunto "
+                    "(CN, CH, LC, MT e Redação) como um único conjunto de valores. Difere da \"nota geral\", "
+                    "que é a média das cinco notas calculada por participante." 
                 ),
             )
     with col3:
         with st.container(border=True):
             st.metric(
-                "Mediana Geral",
-                f"{kpis['mediana_geral']:.2f}",
+                "Mediana de todas as notas",
+                _br(kpis["mediana_geral"], 2),
+                delta=_delta("mediana_geral"), delta_color="off",
                 help=(
-                    "Valor central de todas as notas válidas dos participantes "
-                    "(presentes nas quatro provas objetivas), considerando as cinco áreas em conjunto: "
+                    "Valor central de todas as notas válidas das cinco áreas em conjunto: "
                     "metade das notas fica abaixo e metade acima desse valor. "
-                    "Notas ausentes são descartadas. É menos sensível a valores extremos que a média."
+                    "É menos sensível a valores extremos que a média." 
                 ),
             )
 
 
 
-def _render_analises(participantes: pl.DataFrame, chave: str):
-    """Seções: faixa etária e sexo, cor/raça, perfil escolar e distribuição das notas."""
+def _render_analises(participantes: pl.DataFrame, chave: str, ref: pl.DataFrame | None = None):
+    """Seções: faixa etária e sexo, cor/raça, perfil escolar e distribuição das notas.
+    `ref` (população) é usado apenas para exibir deltas nas medidas descritivas da amostra."""
     st.divider()
 
     # --- Seção 1: Distribuição por Faixa Etária e Sexo ---
@@ -337,6 +363,7 @@ def _render_analises(participantes: pl.DataFrame, chave: str):
     )
 
     pyramid_df = pyramid_source.to_pandas()
+    pyramid_df["pct"] = (pyramid_df["total"] / pyramid_df["total"].sum() * 100).round(2)
     gender_df  = (
         pyramid_source
         .group_by("sexo")
@@ -344,6 +371,7 @@ def _render_analises(participantes: pl.DataFrame, chave: str):
         .sort("sexo")
         .to_pandas()
     )
+    gender_df["pct"] = (gender_df["total"] / gender_df["total"].sum() * 100).round(2)
 
     col_pyramid, col_gender = st.columns([6, 2], gap="large")
 
@@ -367,7 +395,7 @@ def _render_analises(participantes: pl.DataFrame, chave: str):
                     alt.Y("faixa_etaria:O").sort(_FAIXA_ORDER_PYRAMID).axis(None),
                     alt.X("total:Q").title("Quantidade").sort("descending").scale(_x_scale),
                     alt.Color("sexo:N").scale(color_scale).title("Sexo"),
-                    alt.Tooltip(["faixa_etaria:N", "sexo:N", "total:Q"]),
+                    tooltip=["faixa_etaria:N", "sexo:N", "total:Q", alt.Tooltip("pct:Q", title="% do total")],
                     opacity=alt.condition(nearest, alt.value(1), alt.value(0.8)),
                 )
                 .mark_bar()
@@ -392,7 +420,7 @@ def _render_analises(participantes: pl.DataFrame, chave: str):
                     alt.Y("faixa_etaria:O").sort(_FAIXA_ORDER_PYRAMID).axis(None),
                     alt.X("total:Q").title("Quantidade").scale(_x_scale),
                     alt.Color("sexo:N").scale(color_scale).title("Sexo"),
-                    alt.Tooltip(["faixa_etaria:N", "sexo:N", "total:Q"]),
+                    tooltip=["faixa_etaria:N", "sexo:N", "total:Q", alt.Tooltip("pct:Q", title="% do total")],
                     opacity=alt.condition(nearest_right, alt.value(1), alt.value(0.8)),
                 )
                 .mark_bar()
@@ -408,7 +436,7 @@ def _render_analises(participantes: pl.DataFrame, chave: str):
                 .configure_title(fontSize=14, anchor="middle")
                 .configure_legend(orient="bottom", title=None, labelFontSize=12)
             )
-            st.altair_chart(pyramid_chart, use_container_width=True)
+            st.altair_chart(pyramid_chart, width="stretch")
 
         with col_gender:
             gender_chart = (
@@ -419,12 +447,12 @@ def _render_analises(participantes: pl.DataFrame, chave: str):
                     alt.X("sexo_abrev:N").title(None).sort(["F", "M"]).axis(labelAngle=0),
                     alt.Y("total:Q").title("Participantes"),
                     alt.Color("sexo:N").scale(color_scale).legend(None),
-                    alt.Tooltip(["sexo:N", "total:Q"]),
+                    tooltip=["sexo:N", "total:Q", alt.Tooltip("pct:Q", title="% do total")],
                 )
                 .properties(title="Distribuição por sexo", height=540, padding={"top": 40, "left": 5, "right": 5, "bottom": 5})
                 .configure_title(fontSize=14, anchor="middle")
             )
-            st.altair_chart(gender_chart, use_container_width=True)
+            st.altair_chart(gender_chart, width="stretch")
 
     # --- Seção: Distribuição por cor/raça ---
     st.divider()
@@ -462,7 +490,7 @@ def _render_analises(participantes: pl.DataFrame, chave: str):
                 alt.Tooltip(["raca:N", "total:Q", "pct:Q"]),
                 opacity=alt.condition(nearest_raca, alt.value(1), alt.value(1)),
             ).add_params(nearest_raca).properties(title="Participantes por cor/raça autodeclarada", height=280),
-            use_container_width=True,
+            width="stretch",
         )
 
 
@@ -506,7 +534,7 @@ def _render_analises(participantes: pl.DataFrame, chave: str):
                 alt.Order("escola:N", sort="ascending"),
                 alt.Tooltip(["escola:N", "total:Q", "pct:Q"]),
             ).properties(title="Participantes por tipo de escola", height=250),
-            use_container_width=True,
+            width="stretch",
         )
 
     with col_conclusao:
@@ -537,7 +565,7 @@ def _render_analises(participantes: pl.DataFrame, chave: str):
                 alt.Tooltip(["situacao:N", "total:Q", "pct:Q"]),
                 opacity=alt.condition(nearest_conclusao, alt.value(1), alt.value(1)),
             ).add_params(nearest_conclusao).properties(title="Situação escolar dos participantes", height=200),
-            use_container_width=True,
+            width="stretch",
         )
 
 
@@ -553,6 +581,7 @@ def _render_analises(participantes: pl.DataFrame, chave: str):
         "Abaixo, o histograma mostra a distribuição completa das notas, com a nota geral como visão padrão "
         "e a opção de alternar para cada área."
     )
+    # todas as notas registradas são consideradas, inclusive notas zero (regra única do app)
     enem_df_geral = (
         participantes
         .select(list(NOTAS_PROVAS.keys()))
@@ -595,7 +624,7 @@ def _render_analises(participantes: pl.DataFrame, chave: str):
         margin=dict(t=60, b=40, l=60, r=20),
         height=420,
     )
-    st.plotly_chart(fig_box, use_container_width=True)
+    st.plotly_chart(fig_box, width="stretch")
 
     # --- Histograma interativo das notas (mesma seção) ---
 
@@ -612,25 +641,25 @@ def _render_analises(participantes: pl.DataFrame, chave: str):
 
     @st.cache_data
     def _hist_notas(_df: pl.DataFrame, opcao: str, chave_cache: str) -> np.ndarray:
-        """Notas válidas para a opção escolhida, conforme as regras de exclusão.
+        """Notas não nulas para a opção escolhida, inclusive notas zero.
+        A nota geral segue a regra de `_notas_validas`.
         `chave_cache` diferencia população e amostra no cache (o DataFrame não é usado no hash)."""
-        objetivas = [("NU_NOTA_CN", "TP_PRESENCA_CN"), ("NU_NOTA_CH", "TP_PRESENCA_CH"),
-                     ("NU_NOTA_LC", "TP_PRESENCA_LC"), ("NU_NOTA_MT", "TP_PRESENCA_MT")]
         if opcao == "Nota geral":
-            # presente em todas as provas, quatro objetivas > 0 e redação não nula
-            cond = [pl.col(p) == 1 for _, p in objetivas]
-            cond += [pl.col(n).is_not_null() & (pl.col(n) > 0) for n, _ in objetivas]
-            cond += [pl.col("NU_NOTA_REDACAO").is_not_null()]
-            serie = _df.filter(pl.all_horizontal(cond)).select(
-                pl.mean_horizontal(NOTAS_COLS).alias("v")
-            )["v"]
+            serie = _notas_validas(_df)["NOTA_GERAL"]
         else:
             nota, presenca = _HIST_OPCOES[opcao]
-            cond = (pl.col(presenca) == 1) & pl.col(nota).is_not_null()
-            if nota != "NU_NOTA_REDACAO":
-                cond = cond & (pl.col(nota) > 0)
-            serie = _df.filter(cond)[nota]
+            serie = _df.filter((pl.col(presenca) == 1) & pl.col(nota).is_not_null())[nota]
         return serie.cast(pl.Float64).to_numpy()
+
+    def _medidas(v: np.ndarray) -> dict:
+        n = len(v)
+        media = float(np.mean(v))
+        dp = float(np.std(v, ddof=1)) if n > 1 else 0.0
+        return {
+            "n": n, "Média": media, "Mediana": float(np.median(v)), "Desvio-padrão": dp,
+            "Coef. de variação (%)": dp / media * 100 if media else 0.0,
+            "Mínimo": float(np.min(v)), "Máximo": float(np.max(v)),
+        }
 
     def _hist_pct(valores: np.ndarray):
         contagem, _ = np.histogram(np.clip(valores, 0, 1000), bins=_HIST_EDGES)
@@ -730,38 +759,100 @@ def _render_analises(participantes: pl.DataFrame, chave: str):
             bgcolor="rgba(255,255,255,0.8)", bordercolor="#D6DCE5", borderwidth=1,
         )
 
-        st.plotly_chart(fig_hist, use_container_width=True)
+        st.plotly_chart(fig_hist, width="stretch")
 
-        _fmt = lambda v: f"{v:,.1f}".replace(",", "X").replace(".", ",").replace("X", ".")
-        _kpis_hist = [
-            ("n", f"{_n:,}".replace(",", ".")),
-            ("Média", _fmt(_media)),
-            ("Mediana", _fmt(_mediana)),
-            ("Desvio-padrão", _fmt(float(np.std(_vals, ddof=1)) if _n > 1 else 0.0)),
-            ("Mínimo", _fmt(float(np.min(_vals)))),
-            ("Máximo", _fmt(float(np.max(_vals)))),
-        ]
-        for _kc, (_rot, _v) in zip(st.columns(len(_kpis_hist)), _kpis_hist):
+        _med = _medidas(_vals)
+        _med_ref = None
+        if ref is not None:
+            _vals_ref = _hist_notas(ref, _hist_sel, "pop")
+            _med_ref = _medidas(_vals_ref) if len(_vals_ref) else None
+        if _med_ref is not None:
+            st.caption(
+                "Medidas descritivas da amostra. Os valores em cinza mostram a diferença **amostra − população**."
+            )
+        for _kc, (_rot, _v) in zip(st.columns(len(_med)), _med.items()):
+            _casas = 0 if _rot == "n" else 1
+            _d = None
+            if _med_ref is not None and _rot != "n":
+                _dv = _v - _med_ref[_rot]
+                _d = f"{'+' if _dv >= 0 else ''}{_br(_dv, _casas)}"
             with _kc:
                 with st.container(border=True):
-                    st.metric(_rot, _v)
+                    st.metric(_rot, _br(_v, _casas), delta=_d, delta_color="off")
 
         st.caption(
             f"Classes de {_HIST_BIN} pontos (20 classes de 0 a 1000). {_escala_txt}. "
-            "Foram considerados apenas participantes presentes; notas zero ou vazias das provas objetivas "
-            "são excluídas. A nota geral é a média das cinco notas e só é calculada para quem possui as cinco."
+            "Foram considerados apenas participantes presentes. Todas as notas registradas são consideradas, "
+            "inclusive notas zero. A nota geral é a média das cinco notas de cada participante. "
+            "Coeficiente de variação = desvio-padrão ÷ média."
         )
+
+    # --- Média da nota geral por tipo de escola ---
+    st.divider()
+    st.subheader(":material/school: Média da nota geral por tipo de escola")
+    st.caption(
+        "Média da nota geral (média das cinco notas, inclusive zeros) para cada tipo de escola declarado. "
+        "Passe o cursor sobre as barras para ver o número de participantes e o desvio-padrão."
+        + (" O losango indica a média da população no mesmo grupo." if ref is not None else "")
+    )
+
+    def _media_por_escola(df: pl.DataFrame) -> pd.DataFrame:
+        return (
+            _notas_validas(df)
+            .with_columns(
+                pl.col("TP_ESCOLA").replace_strict(ESCOLA_MAP, default="Não Respondeu", return_dtype=pl.String)
+                  .alias("escola")
+            )
+            .group_by("escola")
+            .agg(
+                pl.len().alias("n"),
+                pl.col("NOTA_GERAL").mean().alias("media"),
+                pl.col("NOTA_GERAL").std().alias("dp"),
+            )
+            .to_pandas()
+            .set_index("escola")
+            .reindex(["Pública", "Privada", "Não Respondeu"])
+            .dropna(subset=["n"])
+        )
+
+    _esc = _media_por_escola(participantes)
+    fig_esc = go.Figure(go.Bar(
+        y=_esc.index, x=_esc["media"], orientation="h", name="Média",
+        marker_color=[CORES_ESCOLA[e] for e in _esc.index],
+        text=[_br(v, 1) for v in _esc["media"]], textposition="outside",
+        customdata=np.column_stack([
+            [_br(v, 0) for v in _esc["n"]], [_br(v, 1) for v in _esc["dp"]],
+        ]),
+        hovertemplate="<b>%{y}</b><br>Média: %{text}<br>n = %{customdata[0]}"
+                      "<br>Desvio-padrão: %{customdata[1]}<extra></extra>",
+    ))
+    if ref is not None:
+        _esc_pop = _media_por_escola(ref).reindex(_esc.index)
+        fig_esc.add_trace(go.Scatter(
+            y=_esc_pop.index, x=_esc_pop["media"], mode="markers", name="Média da população",
+            marker=dict(symbol="diamond", size=12, color="#1F2937", line=dict(color="white", width=1)),
+            customdata=[_br(v, 1) for v in _esc_pop["media"]],
+            hovertemplate="<b>%{y}</b><br>Média da população: %{customdata}<extra></extra>",
+        ))
+    fig_esc.update_layout(
+        title=dict(text="Média da nota geral por tipo de escola", x=0.5, xanchor="center", font=dict(size=15)),
+        xaxis=dict(title="Média da nota geral", range=[0, max(_esc["media"].max() * 1.15, 700)]),
+        yaxis=dict(title=None, autorange="reversed"),
+        showlegend=ref is not None,
+        legend=dict(orientation="h", y=-0.25, x=0.5, xanchor="center"),
+        margin=dict(t=60, b=40, l=110, r=20),
+        height=320,
+    )
+    st.plotly_chart(fig_esc, width="stretch")
 
 
 # ============================================================
 # ABA 1 — VISÃO GERAL
 # ============================================================
 
-def get_enem_kpis(data):
-    total_inscritos   = data.height
-    participantes_df  = data.filter(PRESENCA_FILTER)
-    total_participantes = participantes_df.height
-
+def get_enem_kpis(participantes_df):
+    """Indicadores gerais; recebe apenas participantes (presentes nas quatro provas)."""
+    # todas as notas registradas são consideradas, inclusive notas zero (regra única do app)
     notas_validas = (
         participantes_df.select(NOTAS_COLS).unpivot().drop_nulls("value")["value"]
     )
@@ -769,20 +860,24 @@ def get_enem_kpis(data):
     mediana_geral     = round(notas_validas.median(), 2) if notas_validas.len() > 0 else 0.0
 
     return {
-        "total_inscritos":     total_inscritos,
-        "total_participantes": total_participantes,
+        "total_participantes": participantes_df.height,
         "media_geral":         media_geral,
         "mediana_geral":       mediana_geral,
     }
 
 
-enem_kpis = get_enem_kpis(enem_df)
+enem_kpis = get_enem_kpis(enem_participantes)
+
+DEF_POPULACAO = (
+    f"participantes do ENEM {ANO} que realizaram a prova no Rio Grande do Sul e estiveram "
+    "presentes nas quatro provas objetivas (Ciências da Natureza, Ciências Humanas, Linguagens e Matemática)"
+)
 
 with tab_populacao:
     st.markdown(
-        "Análise dos microdados do ENEM para o Rio Grande do Sul, cobrindo perfil demográfico, socioeconômico e desempenho acadêmico dos participantes.  \n"
+        "Análise dos microdados do ENEM para o Rio Grande do Sul, cobrindo perfil demográfico, escolar e desempenho acadêmico dos participantes.  \n"
         f"**Edição analisada:** {ANO}  \n"
-        f"**Filtro:** Participantes do Rio Grande do Sul  \n"
+        f"**População:** {DEF_POPULACAO}  \n"
         "**Fonte dos dados:** [INEP — Microdados do ENEM](https://www.gov.br/inep/pt-br/acesso-a-informacao/dados-abertos/microdados/enem)  "
     )
     st.info(
@@ -791,18 +886,26 @@ with tab_populacao:
         "vincular informações do participante ao seu desempenho nas provas. Por este motivo, foi escolhido especificamente o ano de 2023.",
         icon=":material/info:",
     )
+
     _render_indicadores(enem_kpis)
 
     # --- Variáveis selecionadas ---
     st.divider()
     st.subheader(":material/list_alt: Variáveis selecionadas")
     st.caption("Variáveis dos microdados do ENEM 2023 utilizadas nas análises e sua classificação estatística.")
+    for _col, (_rot, _val, _help) in zip(st.columns(2), [
+        ("Variáveis nos microdados", str(N_VARIAVEIS_ORIGINAIS), f"Colunas do arquivo MICRODADOS_ENEM_{ANO}.csv divulgado pelo INEP."),
+        ("Variáveis mantidas", str(len(COLUMNS)), "Colunas mantidas no arquivo da população; as analisadas estão listadas abaixo."),
+    ]):
+        with _col:
+            with st.container(border=True):
+                st.metric(_rot, _val, help=_help)
 
     def _tabela_codigos(itens):
         st.dataframe(
             pd.DataFrame(itens, columns=["Código", "Descrição"]).astype(str),
             hide_index=True,
-            use_container_width=True,
+            width="stretch",
         )
 
     # (tipo, variável, classificação, códigos) — ordenado por tipo e, dentro do tipo, alfabeticamente
@@ -822,7 +925,7 @@ with tab_populacao:
             (3, "Estou cursando e concluirei o Ensino Médio após 2023"),
             (4, "Não concluí e não estou cursando o Ensino Médio"),
         ]),
-        ("Qualitativa", "Tipo de escola", "Nominal (binária)", [
+        ("Qualitativa", "Tipo de escola", "Nominal", [
             (1, "Não respondeu"), (2, "Pública"), (3, "Privada"),
         ]),
         ("Quantitativa", "Nota", "Contínua", [
@@ -831,6 +934,10 @@ with tab_populacao:
             ("LC", "Nota da prova de Linguagens e Códigos"),
             ("MT", "Nota da prova de Matemática"),
             ("RED", "Nota da prova de Redação"),
+        ]),
+        ("Quantitativa", "Nota geral (derivada)", "Contínua", [
+            ("NOTA_GERAL", "Média aritmética das cinco notas (CN, CH, LC, MT e Redação) de cada participante"),
+            ("Regra", "Calculada para quem tem as cinco notas preenchidas, inclusive notas zero"),
         ]),
     ]
 
@@ -850,17 +957,48 @@ with tab_populacao:
 # ============================================================
 
 with tab_amostra:
+    _N_POP = enem_participantes.height
     st.markdown(
-        "Análise descritiva de uma **amostra** dos participantes do ENEM no Rio Grande do Sul, "
-        "replicando as análises realizadas para a população.  \n"
-        "**Grau de confiança:** 95%  \n"
-        "**Margem de erro:** 2%  \n"
-        "**Proporção:** 50%  \n"
-        "**Total da amostra:** 2.351 participantes"
+        "Análise descritiva de uma **amostra aleatória simples** dos participantes do ENEM no Rio Grande do Sul, "
+        "replicando as análises realizadas para a população. As diferenças em relação à população aparecem "
+        "como deltas (amostra − população) nos indicadores."
     )
 
-    _render_indicadores(get_enem_kpis(enem_amostra))
-    _render_analises(enem_amostra, chave="amostra")
+    # --- Dimensionamento ---
+    st.divider()
+    st.subheader(":material/calculate: Dimensionamento da amostra")
+    st.markdown(
+        f"O tamanho da amostra foi obtido com a [calculadora de tamanho amostral da SurveyMonkey]({CALCULADORA_URL}), "
+        "informando os parâmetros abaixo."
+    )
+    _p = st.columns(5)
+    for _col, (_rot, _val) in zip(_p, [
+        ("Tamanho da população (N)", _br(_N_POP, 0)),
+        ("Nível de confiança", f"{CONFIANCA_AMOSTRA:.0%}"),
+        ("Margem de erro", f"{MARGEM_ERRO_AMOSTRA:.0%}"),
+        ("Proporção considerada", f"{PROPORCAO_AMOSTRA:.0%}"),
+        ("Tamanho da amostra (n)", _br(TAMANHO_AMOSTRA, 0)),
+    ]):
+        with _col:
+            with st.container(border=True):
+                st.metric(_rot, _val)
+
+    # --- Seleção ---
+    st.subheader(":material/casino: Seleção da amostra (AAS)")
+    st.markdown(
+        f"1. Partiu-se da lista completa da população ({_br(_N_POP, 0)} participantes, arquivo "
+        f"`{PARTICIPANTES_FILE}`).\n"
+        f"2. Foram sorteados {_br(TAMANHO_AMOSTRA, 0)} participantes **sem reposição** com "
+        f"`polars.DataFrame.sample(n={TAMANHO_AMOSTRA}, with_replacement=False, seed={SEMENTE_AMOSTRA})` "
+        "(script `gerar_amostra.py`).\n"
+        "3. Nesse sorteio, todos os subconjuntos de tamanho n têm a mesma chance de serem escolhidos; logo, cada "
+        f"participante tem a mesma probabilidade de seleção, n/N = {_br(TAMANHO_AMOSTRA / _N_POP, 4)}.\n"
+        f"4. A semente fixa ({SEMENTE_AMOSTRA}) torna o sorteio **reprodutível**: rodar o script novamente gera "
+        f"exatamente a mesma amostra, salva em `{AMOSTRA_FILE}`."
+    )
+
+    _render_indicadores(get_enem_kpis(enem_amostra), kpis_ref=enem_kpis)
+    _render_analises(enem_amostra, chave="amostra", ref=enem_participantes)
 
 
 # ============================================================
@@ -888,6 +1026,23 @@ def _inferencia_proporcao(amostra: pl.DataFrame, evento: pl.Expr, p0: float, alp
     }
 
 
+def _inferencia_media(v: np.ndarray, mu0: float, alpha: float) -> dict:
+    """IC e teste t bilateral de uma amostra para a média (H0: μ = μ0)."""
+    from scipy import stats
+
+    n, m, s = len(v), float(np.mean(v)), float(np.std(v, ddof=1))
+    ep = s / np.sqrt(n)
+    gl = n - 1
+    t_crit = float(stats.t.ppf(1 - alpha / 2, gl))
+    t_obs = (m - mu0) / ep
+    p_valor = float(2 * stats.t.sf(abs(t_obs), gl))
+    return {
+        "n": n, "media": m, "s": s, "ep": ep, "gl": gl,
+        "ic_inf": m - t_crit * ep, "ic_sup": m + t_crit * ep,
+        "t": t_obs, "t_crit": t_crit, "p_valor": p_valor, "rejeita": p_valor < alpha,
+    }
+
+
 def _inferencia_duas_medias(a: np.ndarray, b: np.ndarray, alpha: float) -> dict:
     """IC de cada média, IC da diferença (a − b) e teste t de Welch unilateral (H1: μa − μb > 0)."""
     from scipy import stats
@@ -910,20 +1065,188 @@ def _inferencia_duas_medias(a: np.ndarray, b: np.ndarray, alpha: float) -> dict:
     return {
         "a": ga, "b": gb, "dif": dif, "ep": ep, "gl": gl,
         "ic_inf": dif - t_ic * ep, "ic_sup": dif + t_ic * ep,
+        "lim_inf_unilateral": dif - t_crit * ep,        # limite inferior do IC unilateral (1 − α)
         "t": t_obs, "t_crit": t_crit, "p_valor": p_valor, "rejeita": p_valor < alpha,
     }
 
 
-def _br(v: float, casas: int = 4) -> str:
-    return f"{v:,.{casas}f}".replace(",", "X").replace(".", ",").replace("X", ".")
+def _pval_txt(p: float) -> str:
+    return "< 0,0001" if p < 1e-4 else _br(p)
+
+
+def _metricas(itens):
+    """Linha de st.metric com borda; itens = [(rótulo, valor, help|None), ...]."""
+    for _col, (_rot, _val, _help) in zip(st.columns(len(itens)), itens):
+        with _col:
+            with st.container(border=True):
+                st.metric(_rot, _val, help=_help)
+
+
+def _plot_estatistica(obs: float, crit: float, alpha: float, cor: str,
+                      gl: float | None = None, bilateral: bool = True, simbolo: str = "z"):
+    """Curva da distribuição da estatística de teste sob H0 com região de rejeição e valor observado."""
+    from scipy import stats
+
+    lim = max(4.0, abs(obs) + 1)
+    xs = np.linspace(-lim, lim, 1500)
+    ys = stats.norm.pdf(xs) if gl is None else stats.t.pdf(xs, gl)
+    nome_dist = "N(0, 1)" if gl is None else f"t de Student (gl = {_br(gl, 1)})"
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=xs, y=ys, mode="lines", line=dict(color="#374151", width=2),
+                             name=nome_dist, hoverinfo="skip"))
+    regioes = [(xs <= -crit, True), (xs >= crit, False)] if bilateral else [(xs >= crit, True)]
+    for mask, show in regioes:
+        fig.add_trace(go.Scatter(
+            x=xs[mask], y=ys[mask], fill="tozeroy", mode="none",
+            fillcolor="rgba(214,39,40,0.35)", name=f"Região de rejeição (α = {_br(alpha, 2)})",
+            showlegend=show, hoverinfo="skip",
+        ))
+    fig.add_vline(x=obs, line=dict(color=cor, width=3),
+                  annotation_text=f"{simbolo} observado = {_br(obs, 2)}", annotation_position="top left")
+    for s in ((-crit, crit) if bilateral else (crit,)):
+        fig.add_vline(x=s, line=dict(color="#D62728", width=1.5, dash="dash"),
+                      annotation_text=_br(s, 3), annotation_position="bottom right")
+    fig.update_layout(
+        title=dict(text="Distribuição da estatística de teste sob H₀", x=0.5, xanchor="center", font=dict(size=15)),
+        xaxis=dict(title=simbolo, range=[-lim, lim], fixedrange=True),
+        yaxis=dict(title="Densidade", fixedrange=True),
+        legend=dict(orientation="h", y=-0.25, x=0.5, xanchor="center"),
+        separators=",.", margin=dict(t=60, b=40, l=60, r=20), height=360,
+    )
+    st.plotly_chart(fig, width="stretch")
+
+
+def _render_teste_proporcao(*, titulo, icone, variavel_md, evento_md, parametro_md, evento_expr,
+                            p0, justificativa_md, h0_rot, h1_rot, sujeito, cor, alpha, alpha_rot, n_pop) -> dict:
+    """Bloco completo (definição, hipóteses, IC, condições, teste e conclusão) para uma proporção."""
+    conf = 1 - alpha
+    p0_tex = _br(p0, 3).rstrip("0").replace(",", "{,}")
+    st.divider()
+    st.subheader(f"{icone} {titulo}")
+
+    st.markdown("##### 1. Variável e evento de interesse")
+    st.markdown(f"- **Variável qualitativa:** {variavel_md}  \n- **Evento de interesse:** {evento_md}  \n"
+                f"- **Parâmetro:** {parametro_md}")
+
+    st.markdown("##### 2. Hipóteses")
+    st.markdown(justificativa_md)
+    _h1, _h2 = st.columns(2)
+    with _h1:
+        with st.container(border=True):
+            st.markdown(f"**Hipótese nula** — {h0_rot}")
+            st.latex(r"H_0:\; p = " + p0_tex)
+    with _h2:
+        with st.container(border=True):
+            st.markdown(f"**Hipótese alternativa** — {h1_rot}")
+            st.latex(r"H_1:\; p \neq " + p0_tex)
+
+    res = _inferencia_proporcao(enem_amostra, evento_expr, p0, alpha)
+
+    st.markdown(f"##### 3. Estimação da proporção — intervalo de {conf:.0%} de confiança")
+    st.latex(
+        r"\hat{p} = \frac{x}{n} \qquad "
+        r"IC_{" + f"{conf*100:.0f}" + r"\%}(p) = \hat{p} \pm z_{\alpha/2}\sqrt{\frac{\hat{p}(1-\hat{p})}{n}}"
+    )
+    _metricas([
+        ("Casos na amostra (x)", _br(res["x"], 0), None),
+        ("Tamanho da amostra (n)", _br(res["n"], 0), None),
+        ("Proporção amostral (p̂)", _br(res["p_hat"]), None),
+        ("Erro-padrão", _br(res["ep"]), None),
+        (f"IC {conf:.0%}", f"[{_br(res['ic_inf'])}; {_br(res['ic_sup'])}]", None),
+    ])
+    st.caption(
+        f"Com {conf:.0%} de confiança, a proporção de {sujeito} está entre "
+        f"{_br(res['ic_inf']*100, 2)}% e {_br(res['ic_sup']*100, 2)}%. "
+        f"Valor crítico utilizado: z = {_br(res['z_crit'], 3)}."
+    )
+
+    st.markdown("##### 4. Condições de aplicação")
+    _frac = res["n"] / n_pop
+    st.markdown(
+        f"independentes — atendida. A correção para população finita, √(1 − n/N) = {_br((1 - _frac) ** 0.5, 3)}, "
+        "teria efeito desprezível e não foi aplicada.  \n"
+        + (f"- **Aproximação normal:** min(n·p₀, n·(1 − p₀)) = {_br(res['cond'], 1)} ≥ 10 — atendida."
+           if res["cond"] >= 10 else
+           f"- **Aproximação normal:** min(n·p₀, n·(1 − p₀)) = {_br(res['cond'], 1)} < 10 — **não atendida**.")
+    )
+
+    st.markdown("##### 5. Teste de hipótese para a proporção")
+    st.latex(
+        r"Z = \frac{\hat{p} - p_0}{\sqrt{\dfrac{p_0(1-p_0)}{n}}} \qquad "
+        r"\text{valor-p} = 2\,P(Z > |z_{obs}|)"
+    )
+    _pv = _pval_txt(res["p_valor"])
+    _metricas([
+        ("Nível de significância (α)", _br(alpha, 2), None),
+        ("Estatística de teste (z)", _br(res["z"], 2), None),
+        ("Valor crítico", f"± {_br(res['z_crit'], 3)}", None),
+        ("Valor-p", _pv, f"Valor exato: {res['p_valor']:.2e}"),
+    ])
+    _plot_estatistica(res["z"], res["z_crit"], alpha, cor)
+
+    st.markdown("##### 6. Conclusão")
+    _ic_txt = f"[{_br(res['ic_inf'])}; {_br(res['ic_sup'])}]"
+    _p0_txt = _br(p0, 3).rstrip("0").rstrip(",")
+    if res["rejeita"]:
+        _dir = "acima" if res["p_hat"] > p0 else "abaixo"
+        st.success(
+            f"Como |z| = {_br(abs(res['z']), 2)} > {_br(res['z_crit'], 3)} e o valor-p ({_pv}) é menor que "
+            f"α = {_br(alpha, 2)}, **rejeitamos H₀**. Há evidência estatística, ao nível de {alpha_rot} de "
+            f"significância, de que a proporção de {sujeito} é diferente de {_p0_txt}. O intervalo de confiança "
+            f"{_ic_txt} está inteiramente {_dir} de {_p0_txt}, o que indica que a proporção está {_dir} do valor de referência.",
+            icon=":material/check_circle:",
+        )
+    else:
+        st.warning(
+            f"Como |z| = {_br(abs(res['z']), 2)} ≤ {_br(res['z_crit'], 3)} e o valor-p ({_pv}) é maior ou igual a "
+            f"α = {_br(alpha, 2)}, **não rejeitamos H₀**. Não há evidência estatística suficiente para afirmar que "
+            f"a proporção de {sujeito} difere de {_p0_txt}; coerentemente, o intervalo {_ic_txt} contém {_p0_txt}.",
+            icon=":material/info:",
+        )
+    return res
+
+
+def _qq_plot(grupos: list[tuple[str, np.ndarray, str]], titulo: str):
+    """Gráfico Q-Q normal (quantis teóricos × quantis amostrais) para um ou mais grupos."""
+    from scipy import stats
+
+    fig = go.Figure()
+    for nome, v, cor in grupos:
+        (osm, osr), (slope, intercept, _r) = stats.probplot(v, dist="norm")
+        fig.add_trace(go.Scatter(x=osm, y=osr, mode="markers", name=nome,
+                                 marker=dict(color=cor, size=4, opacity=0.6),
+                                 hovertemplate=f"{nome}<br>Teórico: %{{x:.2f}}<br>Nota: %{{y:.1f}}<extra></extra>"))
+        fig.add_trace(go.Scatter(x=[osm.min(), osm.max()], y=[intercept + slope * osm.min(), intercept + slope * osm.max()],
+                                 mode="lines", line=dict(color=cor, dash="dash"), showlegend=False, hoverinfo="skip"))
+    fig.update_layout(
+        title=dict(text=titulo, x=0.5, xanchor="center", font=dict(size=14)),
+        xaxis=dict(title="Quantis teóricos da normal padrão", fixedrange=True),
+        yaxis=dict(title="Quantis amostrais (nota)", fixedrange=True),
+        legend=dict(orientation="h", y=-0.25, x=0.5, xanchor="center"),
+        separators=",.", margin=dict(t=50, b=40, l=60, r=20), height=340,
+    )
+    st.plotly_chart(fig, width="stretch")
+
+
+@st.cache_data(show_spinner="Simulando amostras aleatórias…")
+def _simular_amostras(_pop: pl.DataFrame, n: int, n_sim: int, seed: int) -> dict:
+    """Sorteia `n_sim` AAS de tamanho `n` da população e guarda as estimativas de p (feminino) e μ (Matemática).
+    O DataFrame não entra no hash do cache (a população é fixa)."""
+    rng = np.random.default_rng(seed)
+    fem = (_pop["TP_SEXO"] == "F").to_numpy()
+    mt = _pop["NU_NOTA_MT"].cast(pl.Float64).to_numpy()
+    mt_ok = ~np.isnan(mt)  # todas as notas registradas, inclusive zero
+    N = len(fem)
+    p_hat, mt_media, mt_s, mt_n = (np.empty(n_sim) for _ in range(4))
+    for i in range(n_sim):
+        idx = rng.choice(N, size=n, replace=False)
+        p_hat[i] = fem[idx].mean()
+        v = mt[idx][mt_ok[idx]]
+        mt_media[i], mt_s[i], mt_n[i] = v.mean(), v.std(ddof=1), len(v)
+    return {"p_hat": p_hat, "mt_media": mt_media, "mt_s": mt_s, "mt_n": mt_n}
 
 
 with tab_comparacao:
-    st.markdown(
-        "Inferência estatística realizada **exclusivamente com os dados da amostra** "
-        f"({TAMANHO_AMOSTRA:,} participantes)".replace(",", ".") + ". "
-        "A comparação com os valores da população será apresentada em seção posterior."
-    )
 
     _alpha_rot = st.segmented_control(
         "Nível de significância (α) — aplicado a todos os testes desta aba",
@@ -931,152 +1254,151 @@ with tab_comparacao:
     ) or "5%"
     ALPHA = int(_alpha_rot.rstrip("%")) / 100
     CONF = 1 - ALPHA
+    N_POP = enem_participantes.height
 
-    st.divider()
-    st.subheader(":material/functions: Inferência para uma proporção — participantes do sexo feminino")
-
-    # --- Definição ---
-    st.markdown("##### 1. Variável e evento de interesse")
-    st.markdown(
-        "- **Variável qualitativa:** Sexo (`TP_SEXO`), nominal binária  \n"
-        "- **Evento de interesse:** o participante ser do sexo **Feminino**  \n"
-        "- **Parâmetro:** $p$ = proporção de mulheres entre os participantes do ENEM 2023 no RS"
+    # ========================================================
+    # (a1) Proporção — sexo feminino
+    # ========================================================
+    res_fem = _render_teste_proporcao(
+        titulo="1. Inferência para uma proporção — participantes do sexo feminino",
+        icone=":material/functions:",
+        variavel_md="Sexo (`TP_SEXO`), nominal binária",
+        evento_md="o participante ser do sexo **Feminino**",
+        parametro_md="$p$ = proporção de mulheres entre os participantes do ENEM 2023 no RS",
+        evento_expr=pl.col("TP_SEXO") == "F",
+        p0=0.5,
+        justificativa_md=(
+            "O valor de referência é definido a partir de um critério teórico de **paridade entre os sexos**, "
+            "sem uso de informações da população. O teste é **bilateral**, pois não se assume de antemão "
+            "qual sexo predomina."
+        ),
+        h0_rot="participação igual entre os sexos", h1_rot="participação diferente entre os sexos",
+        sujeito="mulheres entre os participantes", cor=CORES_SEXO["Feminino"],
+        alpha=ALPHA, alpha_rot=_alpha_rot, n_pop=N_POP,
     )
 
-    # --- Hipóteses ---
-    P0 = 0.5
+    # ========================================================
+    # (a2) Proporção — cor/raça branca × Censo 2022
+    # ========================================================
+    res_bra = _render_teste_proporcao(
+        titulo="2. Inferência para uma proporção — participantes autodeclarados brancos",
+        icone=":material/diversity_3:",
+        variavel_md="Cor/raça (`TP_COR_RACA`), nominal",
+        evento_md="o participante se autodeclarar de cor/raça **Branca** (código 1)",
+        parametro_md="$p$ = proporção de participantes brancos entre os participantes do ENEM 2023 no RS",
+        evento_expr=pl.col("TP_COR_RACA") == 1,
+        p0=P0_BRANCOS_CENSO,
+        justificativa_md=(
+            "O valor de referência é a **proporção de pessoas autodeclaradas brancas na população do Rio Grande do Sul "
+            f"segundo o Censo Demográfico 2022 do IBGE** ({_br(P0_BRANCOS_CENSO * 100, 1)}%). "
+            f"Fonte: [IBGE — Cidades e Estados: Rio Grande do Sul]({IBGE_CENSO_RS_URL})."
+        ),
+        h0_rot="perfil racial igual ao do Censo", h1_rot="perfil racial diferente do Censo",
+        sujeito="brancos entre os participantes", cor=CORES_RACA["Branca"],
+        alpha=ALPHA, alpha_rot=_alpha_rot, n_pop=N_POP,
+    )
+
+    # ========================================================
+    # (b1) Média — nota de Matemática × 500
+    # ========================================================
+    st.divider()
+    st.subheader(":material/calculate: 3. Inferência para uma média — nota de Matemática")
+    _mt = enem_amostra.filter(pl.col("NU_NOTA_MT").is_not_null())["NU_NOTA_MT"].cast(pl.Float64).to_numpy()
+
+    st.markdown("##### 1. Variável de interesse")
+    st.markdown(
+        "- **Variável quantitativa:** nota da prova de Matemática (`NU_NOTA_MT`), contínua  \n"
+        "- **Parâmetro:** $\\mu$ = nota média de Matemática dos participantes do ENEM 2023 no RS  \n"
+        f"- Todas as notas registradas são consideradas, inclusive notas zero ({_br(len(_mt), 0)} participantes da amostra)."
+    )
     st.markdown("##### 2. Hipóteses")
     st.markdown(
-        "O valor de referência é definido a partir de um critério teórico de **paridade entre os sexos**, "
-        "sem uso de informações da população. O teste é **bilateral**, pois não se assume de antemão "
-        "qual sexo predomina."
+        f"O valor de referência é **{MU0_MATEMATICA} pontos**, a média de referência da escala de notas do ENEM "
+        f"(fonte: [INEP — Entenda a sua nota no Enem: guia do participante]({INEP_GUIA_NOTA_URL})). "
+        "O teste é **bilateral**."
     )
     _h1, _h2 = st.columns(2)
     with _h1:
         with st.container(border=True):
-            st.markdown("**Hipótese nula** — participação igual entre os sexos")
-            st.latex(r"H_0:\; p = 0{,}5")
+            st.markdown("**Hipótese nula** — média igual à referência da escala")
+            st.latex(rf"H_0:\; \mu = {MU0_MATEMATICA}")
     with _h2:
         with st.container(border=True):
-            st.markdown("**Hipótese alternativa** — participação diferente entre os sexos")
-            st.latex(r"H_1:\; p \neq 0{,}5")
+            st.markdown("**Hipótese alternativa** — média diferente da referência")
+            st.latex(rf"H_1:\; \mu \neq {MU0_MATEMATICA}")
 
-    res =_inferencia_proporcao(enem_amostra, pl.col("TP_SEXO") == "F", P0, ALPHA)
+    res_mt = _inferencia_media(_mt, MU0_MATEMATICA, ALPHA)
 
-    # --- Estimativa pontual e IC ---
-    st.markdown(f"##### 3. Estimação da proporção — intervalo de {CONF:.0%} de confiança")
-    st.latex(
-        r"\hat{p} = \frac{x}{n} \qquad "
-        r"IC_{" + f"{CONF*100:.0f}" + r"\%}(p) = \hat{p} \pm z_{\alpha/2}\sqrt{\frac{\hat{p}(1-\hat{p})}{n}}"
-    )
-    _c = st.columns(5)
-    for _col, (_rot, _val) in zip(_c, [
-        ("Mulheres na amostra (x)", f"{res['x']:,}".replace(",", ".")),
-        ("Tamanho da amostra (n)", f"{res['n']:,}".replace(",", ".")),
-        ("Proporção amostral (p̂)", _br(res["p_hat"])),
-        ("Erro-padrão", _br(res["ep"])),
-        (f"IC {CONF:.0%}", f"[{_br(res['ic_inf'])}; {_br(res['ic_sup'])}]"),
-    ]):
-        with _col:
-            with st.container(border=True):
-                st.metric(_rot, _val)
+    st.markdown(f"##### 3. Estimação da média — intervalo de {CONF:.0%} de confiança")
+    st.latex(r"IC(\mu) = \bar{x} \pm t_{\alpha/2,\,n-1}\,\frac{s}{\sqrt{n}}")
+    _metricas([
+        ("Tamanho da amostra (n)", _br(res_mt["n"], 0), None),
+        ("Média amostral (x̄)", _br(res_mt["media"], 2), None),
+        ("Desvio-padrão (s)", _br(res_mt["s"], 2), None),
+        ("Erro-padrão", _br(res_mt["ep"], 2), None),
+        (f"IC {CONF:.0%}", f"[{_br(res_mt['ic_inf'], 2)}; {_br(res_mt['ic_sup'], 2)}]", None),
+    ])
     st.caption(
-        f"Com {CONF:.0%} de confiança, a proporção de mulheres entre os participantes está entre "
-        f"{_br(res['ic_inf']*100, 2)}% e {_br(res['ic_sup']*100, 2)}%. "
-        f"Valor crítico utilizado: z = {_br(res['z_crit'], 3)}."
+        f"Com {CONF:.0%} de confiança, a nota média de Matemática está entre {_br(res_mt['ic_inf'], 2)} e "
+        f"{_br(res_mt['ic_sup'], 2)} pontos. Valor crítico: t = {_br(res_mt['t_crit'], 3)} (gl = {res_mt['gl']})."
     )
 
-    # --- Teste de hipótese ---
-    st.markdown("##### 4. Teste de hipótese para a proporção")
-    st.latex(
-        r"Z = \frac{\hat{p} - p_0}{\sqrt{\dfrac{p_0(1-p_0)}{n}}} \qquad "
-        r"\text{valor-p} = 2\,P(Z > |z_{obs}|)"
-    )
-    st.caption(
-        f"Condição para a aproximação normal: n·p₀ = n·(1 − p₀) = {_br(res['cond'], 1)} ≥ 10 — atendida."
-        if res["cond"] >= 10 else
-        f"Atenção: n·p₀ = {_br(res['cond'], 1)} < 10 — a aproximação normal não é adequada."
-    )
-    _t = st.columns(4)
-    _pval_txt = "< 0,0001" if res["p_valor"] < 1e-4 else _br(res["p_valor"])
-    for _col, (_rot, _val, _help) in zip(_t, [
+    st.markdown("##### 4. Condições de aplicação")
+    _cq1, _cq2 = st.columns([3, 2])
+    with _cq1:
+        st.markdown(
+            f"- **Normalidade da média amostral:** n = {_br(res_mt['n'], 0)} ≥ 30. Pelo Teorema Central do Limite, "
+            "x̄ tem distribuição aproximadamente normal mesmo que as notas não sejam exatamente normais. "
+            "O gráfico Q-Q ao lado mostra que as notas seguem a reta da normal na maior parte da distribuição, "
+            "com desvios apenas nas caudas (efeito dos limites da escala TRI), o que não compromete o teste "
+            "com uma amostra deste tamanho."
+        )
+    with _cq2:
+        _qq_plot([("Matemática", _mt, CORES_AREAS["Matemática"])], "Gráfico Q-Q — nota de Matemática")
+
+    st.markdown("##### 5. Teste de hipótese para a média (t de uma amostra)")
+    st.latex(r"t = \frac{\bar{x} - \mu_0}{s/\sqrt{n}} \qquad \text{valor-p} = 2\,P(T_{n-1} > |t_{obs}|)")
+    _pv_mt = _pval_txt(res_mt["p_valor"])
+    _metricas([
         ("Nível de significância (α)", _br(ALPHA, 2), None),
-        ("Estatística de teste (z)", _br(res["z"], 2), None),
-        ("Valor crítico", f"± {_br(res['z_crit'], 3)}", None),
-        ("Valor-p", _pval_txt, f"Valor exato: {res['p_valor']:.2e}"),
-    ]):
-        with _col:
-            with st.container(border=True):
-                st.metric(_rot, _val, help=_help)
+        ("Estatística de teste (t)", _br(res_mt["t"], 2), None),
+        ("Graus de liberdade", _br(res_mt["gl"], 0), None),
+        ("Valor crítico", f"± {_br(res_mt['t_crit'], 3)}", None),
+        ("Valor-p", _pv_mt, f"Valor exato: {res_mt['p_valor']:.2e}"),
+    ])
+    _plot_estatistica(res_mt["t"], res_mt["t_crit"], ALPHA, CORES_AREAS["Matemática"], gl=res_mt["gl"], simbolo="t")
 
-    # curva normal padrão com regiões de rejeição e z observado
-    _zc, _zo = res["z_crit"], res["z"]
-    _lim = max(4.0, abs(_zo) + 1)
-    _xs = np.linspace(-_lim, _lim, 1200)
-    _ys = np.exp(-0.5 * _xs**2) / np.sqrt(2 * np.pi)
-    fig_z = go.Figure()
-    fig_z.add_trace(go.Scatter(x=_xs, y=_ys, mode="lines", line=dict(color="#374151", width=2),
-                               name="N(0, 1)", hoverinfo="skip"))
-    for _mask, _show in [(_xs <= -_zc, True), (_xs >= _zc, False)]:
-        fig_z.add_trace(go.Scatter(
-            x=_xs[_mask], y=_ys[_mask], fill="tozeroy", mode="none",
-            fillcolor="rgba(214,39,40,0.35)", name=f"Região de rejeição (α = {_br(ALPHA, 2)})",
-            showlegend=_show, hoverinfo="skip",
-        ))
-    fig_z.add_vline(x=_zo, line=dict(color=CORES_SEXO["Feminino"], width=3),
-                    annotation_text=f"z observado = {_br(_zo, 2)}", annotation_position="top left")
-    for _s in (-_zc, _zc):
-        fig_z.add_vline(x=_s, line=dict(color="#D62728", width=1.5, dash="dash"),
-                        annotation_text=_br(_s, 2), annotation_position="bottom right")
-    fig_z.update_layout(
-        title=dict(text="Distribuição da estatística de teste sob H₀", x=0.5, xanchor="center", font=dict(size=15)),
-        xaxis=dict(title="z", range=[-_lim, _lim], fixedrange=True),
-        yaxis=dict(title="Densidade", fixedrange=True),
-        legend=dict(orientation="h", y=-0.25, x=0.5, xanchor="center"),
-        separators=",.", margin=dict(t=60, b=40, l=60, r=20), height=380,
-    )
-    st.plotly_chart(fig_z, use_container_width=True)
-
-    # --- Conclusão ---
-    st.markdown("##### 5. Conclusão")
-    if res["rejeita"]:
-        _dir = "superior" if res["p_hat"] > P0 else "inferior"
+    st.markdown("##### 6. Conclusão")
+    _ic_mt = f"[{_br(res_mt['ic_inf'], 2)}; {_br(res_mt['ic_sup'], 2)}]"
+    if res_mt["rejeita"]:
+        _dir = "acima" if res_mt["media"] > MU0_MATEMATICA else "abaixo"
         st.success(
-            f"Como |z| = {_br(abs(_zo), 2)} > {_br(_zc, 3)} e o valor-p ({_pval_txt}) é menor que "
-            f"α = {_br(ALPHA, 2)}, **rejeitamos H₀**. Há evidência estatística, ao nível de "
-            f"{_alpha_rot} de significância, de que a proporção de mulheres entre os participantes "
-            f"do ENEM 2023 no RS é diferente de 50%. O intervalo de confiança "
-            f"[{_br(res['ic_inf'])}; {_br(res['ic_sup'])}] está inteiramente {_dir} a 0,5, "
-            f"indicando que as mulheres são {'maioria' if _dir == 'superior' else 'minoria'} entre os participantes.",
+            f"Como |t| = {_br(abs(res_mt['t']), 2)} > {_br(res_mt['t_crit'], 3)} e o valor-p ({_pv_mt}) é menor que "
+            f"α = {_br(ALPHA, 2)}, **rejeitamos H₀**. Há evidência estatística, ao nível de {_alpha_rot} de "
+            f"significância, de que a nota média de Matemática dos participantes do RS é diferente de {MU0_MATEMATICA}. "
+            f"O intervalo {_ic_mt} está inteiramente {_dir} de {MU0_MATEMATICA}: a média está {_dir} da referência da escala.",
             icon=":material/check_circle:",
         )
     else:
         st.warning(
-            f"Como |z| = {_br(abs(_zo), 2)} ≤ {_br(_zc, 3)} e o valor-p ({_pval_txt}) é maior ou igual a "
-            f"α = {_br(ALPHA, 2)}, **não rejeitamos H₀**. Não há evidência estatística suficiente para "
-            "afirmar que a proporção de mulheres difere de 50%.",
+            f"Como |t| = {_br(abs(res_mt['t']), 2)} ≤ {_br(res_mt['t_crit'], 3)} e o valor-p ({_pv_mt}) é maior ou igual a "
+            f"α = {_br(ALPHA, 2)}, **não rejeitamos H₀**. Não há evidência suficiente de que a nota média de "
+            f"Matemática difira de {MU0_MATEMATICA}; o intervalo {_ic_mt} contém {MU0_MATEMATICA}.",
             icon=":material/info:",
         )
 
     # ========================================================
-    # (b) Inferência para média — nota geral: privada × pública
+    # (b2) Diferença de médias — nota geral: privada × pública
     # ========================================================
     st.divider()
-    st.subheader(":material/school: Inferência para médias — nota geral: escola privada × escola pública")
+    st.subheader(":material/school: 4. Inferência para médias — nota geral: escola privada × escola pública")
 
-    _OBJ = ["NU_NOTA_CN", "NU_NOTA_CH", "NU_NOTA_LC", "NU_NOTA_MT"]
-    _amostra_geral = (
-        enem_amostra
-        .filter(pl.all_horizontal([pl.col(c).is_not_null() & (pl.col(c) > 0) for c in _OBJ])
-                & pl.col("NU_NOTA_REDACAO").is_not_null())
-        .with_columns(pl.mean_horizontal(NOTAS_COLS).alias("NOTA_GERAL"))
-    )
+    _amostra_geral = _notas_validas(enem_amostra)
     _n_geral = _amostra_geral.height
     _n_sem_escola = _amostra_geral.filter(pl.col("TP_ESCOLA") == 1).height
     _priv = _amostra_geral.filter(pl.col("TP_ESCOLA") == 3)["NOTA_GERAL"].to_numpy()
     _pub = _amostra_geral.filter(pl.col("TP_ESCOLA") == 2)["NOTA_GERAL"].to_numpy()
 
-    # --- Definição ---
     st.markdown("##### 1. Variável e grupos")
     st.markdown(
         "- **Variável quantitativa:** nota geral — média das cinco notas (CN, CH, LC, MT e Redação), contínua  \n"
@@ -1084,15 +1406,14 @@ with tab_comparacao:
         r"- **Parâmetros:** $\mu_{priv}$ e $\mu_{pub}$ = nota geral média de cada grupo"
     )
     st.info(
-        f"Dos {_n_geral:,} participantes da amostra com nota geral válida, ".replace(",", ".")
-        + f"**{_n_sem_escola:,} ({_n_sem_escola / _n_geral:.0%}) não informaram o tipo de escola**".replace(",", ".")
-        + " (código 1 — a pergunta é respondida principalmente por concluintes do Ensino Médio). "
-        f"A análise considera apenas os {len(_priv) + len(_pub):,} que declararam escola pública ou privada, ".replace(",", ".")
-        + "e as conclusões se referem a esse grupo.",
+        f"Dos {_br(_n_geral, 0)} participantes da amostra com nota geral válida, "
+        f"**{_br(_n_sem_escola, 0)} ({_n_sem_escola / _n_geral:.0%}) não informaram o tipo de escola**"
+        " (código 1 — a pergunta é respondida principalmente por concluintes do Ensino Médio). "
+        f"A análise considera apenas os {_br(len(_priv) + len(_pub), 0)} que declararam escola pública ou privada, "
+        "e as conclusões se referem a esse grupo.",
         icon=":material/info:",
     )
 
-    # --- Hipóteses ---
     st.markdown("##### 2. Hipóteses")
     st.markdown(
         "A hipótese de pesquisa é que alunos de escola privada obtêm nota geral **maior** que alunos de escola "
@@ -1110,7 +1431,6 @@ with tab_comparacao:
 
     rm = _inferencia_duas_medias(_priv, _pub, ALPHA)
 
-    # --- Intervalos de confiança ---
     st.markdown(f"##### 3. Estimação das médias — intervalos de {CONF:.0%} de confiança")
     st.latex(
         r"IC(\mu) = \bar{x} \pm t_{\alpha/2,\,n-1}\,\frac{s}{\sqrt{n}} \qquad "
@@ -1128,7 +1448,7 @@ with tab_comparacao:
         "Média (x̄)": _br(rm["dif"], 2), "Desvio-padrão (s)": "—", "Erro-padrão": _br(rm["ep"], 2),
         f"IC {CONF:.0%}": f"[{_br(rm['ic_inf'], 2)}; {_br(rm['ic_sup'], 2)}]",
     }])
-    st.dataframe(_tab_ic, hide_index=True, use_container_width=True)
+    st.dataframe(_tab_ic, hide_index=True, width="stretch")
 
     fig_ic = go.Figure()
     for nome, g in [("Pública", rm["b"]), ("Privada", rm["a"])]:
@@ -1147,68 +1467,58 @@ with tab_comparacao:
         xaxis=dict(title="Nota geral", fixedrange=True), yaxis=dict(fixedrange=True),
         showlegend=False, separators=",.", margin=dict(t=60, b=40, l=80, r=20), height=260,
     )
-    st.plotly_chart(fig_ic, use_container_width=True)
+    st.plotly_chart(fig_ic, width="stretch")
     st.caption(
         f"Com {CONF:.0%} de confiança, a nota geral média dos alunos de escola privada está entre "
         f"{_br(rm['a']['ic_inf'], 2)} e {_br(rm['a']['ic_sup'], 2)}, e a dos alunos de escola pública entre "
         f"{_br(rm['b']['ic_inf'], 2)} e {_br(rm['b']['ic_sup'], 2)}. A diferença entre as médias está entre "
         f"{_br(rm['ic_inf'], 2)} e {_br(rm['ic_sup'], 2)} pontos."
     )
+    st.info(
+        f"**Relação entre o teste unilateral e o intervalo.** Um teste unilateral com nível α corresponde a um "
+        f"**limite inferior unilateral** de confiança {CONF:.0%} (ou, de forma equivalente, a um IC bilateral de "
+        f"{1 - 2 * ALPHA:.0%}). Com {CONF:.0%} de confiança, a diferença é **maior que "
+        f"{_br(rm['lim_inf_unilateral'], 2)} pontos**; como esse limite "
+        f"{'é maior que zero, a conclusão coincide com a rejeição de H₀' if rm['lim_inf_unilateral'] > 0 else 'não é maior que zero, a conclusão coincide com a não rejeição de H₀'}. "
+        f"O IC bilateral de {CONF:.0%} acima é mostrado para estimar a magnitude da diferença.",
+        icon=":material/lightbulb:",
+    )
 
-    # --- Teste t de Welch ---
-    st.markdown("##### 4. Teste de hipótese para a diferença de médias (t de Welch)")
+    st.markdown("##### 4. Condições de aplicação")
+    _cw1, _cw2 = st.columns([3, 2])
+    with _cw1:
+        st.markdown(
+
+            f"- **Tamanho dos grupos:** n_priv = {_br(rm['a']['n'], 0)} e n_pub = {_br(rm['b']['n'], 0)}, ambos ≥ 30. "
+            "Pelo Teorema Central do Limite, as médias amostrais são aproximadamente normais; o gráfico Q-Q mostra "
+            "notas próximas da normal, com desvios apenas nas caudas.  \n"
+            f"- **Variâncias:** s_priv = {_br(rm['a']['s'], 2)} e s_pub = {_br(rm['b']['s'], 2)}. Como não se supõe "
+            "variâncias iguais, usa-se o teste de **Welch**."
+        )
+    with _cw2:
+        _qq_plot([("Privada", _priv, CORES_ESCOLA["Privada"]), ("Pública", _pub, CORES_ESCOLA["Pública"])],
+                 "Gráfico Q-Q — nota geral por tipo de escola")
+
+    st.markdown("##### 5. Teste de hipótese para a diferença de médias (t de Welch)")
     st.latex(
         r"t = \frac{\bar{x}_{priv} - \bar{x}_{pub}}{\sqrt{\dfrac{s_{priv}^2}{n_{priv}} + \dfrac{s_{pub}^2}{n_{pub}}}}"
         r"\qquad \text{valor-p} = P(T_{gl} > t_{obs})"
     )
-    st.caption(
-        "O teste de Welch não supõe variâncias iguais entre os grupos; os graus de liberdade (gl) são obtidos "
-        "pela aproximação de Welch–Satterthwaite. Com amostras grandes, o Teorema Central do Limite garante "
-        "que as médias amostrais têm distribuição aproximadamente normal."
-    )
-    _pval_m = "< 0,0001" if rm["p_valor"] < 1e-4 else _br(rm["p_valor"])
-    for _col, (_rot, _val, _help) in zip(st.columns(5), [
+ 
+    _pval_m = _pval_txt(rm["p_valor"])
+    _metricas([
         ("Nível de significância (α)", _br(ALPHA, 2), None),
         ("Estatística de teste (t)", _br(rm["t"], 2), None),
         ("Graus de liberdade", _br(rm["gl"], 1), None),
         ("Valor crítico", _br(rm["t_crit"], 3), "Unilateral à direita"),
         ("Valor-p", _pval_m, f"Valor exato: {rm['p_valor']:.2e}"),
-    ]):
-        with _col:
-            with st.container(border=True):
-                st.metric(_rot, _val, help=_help)
+    ])
+    _plot_estatistica(rm["t"], rm["t_crit"], ALPHA, CORES_ESCOLA["Privada"], gl=rm["gl"], bilateral=False, simbolo="t")
 
-    from scipy import stats as _stats
-    _tc, _to = rm["t_crit"], rm["t"]
-    _lim = max(4.0, abs(_to) + 1)
-    _xs = np.linspace(-_lim, _lim, 1500)
-    _ys = _stats.t.pdf(_xs, rm["gl"])
-    fig_t = go.Figure()
-    fig_t.add_trace(go.Scatter(x=_xs, y=_ys, mode="lines", line=dict(color="#374151", width=2),
-                               name=f"t de Student (gl = {_br(rm['gl'], 1)})", hoverinfo="skip"))
-    _m = _xs >= _tc
-    fig_t.add_trace(go.Scatter(
-        x=_xs[_m], y=_ys[_m], fill="tozeroy", mode="none", fillcolor="rgba(214,39,40,0.35)",
-        name=f"Região de rejeição (α = {_br(ALPHA, 2)})", hoverinfo="skip",
-    ))
-    fig_t.add_vline(x=_to, line=dict(color=CORES_ESCOLA["Privada"], width=3),
-                    annotation_text=f"t observado = {_br(_to, 2)}", annotation_position="top left")
-    fig_t.add_vline(x=_tc, line=dict(color="#D62728", width=1.5, dash="dash"),
-                    annotation_text=_br(_tc, 3), annotation_position="bottom right")
-    fig_t.update_layout(
-        title=dict(text="Distribuição da estatística de teste sob H₀", x=0.5, xanchor="center", font=dict(size=15)),
-        xaxis=dict(title="t", range=[-_lim, _lim], fixedrange=True),
-        yaxis=dict(title="Densidade", fixedrange=True),
-        legend=dict(orientation="h", y=-0.25, x=0.5, xanchor="center"),
-        separators=",.", margin=dict(t=60, b=40, l=60, r=20), height=380,
-    )
-    st.plotly_chart(fig_t, use_container_width=True)
-
-    # --- Conclusão ---
-    st.markdown("##### 5. Conclusão")
+    st.markdown("##### 6. Conclusão")
     if rm["rejeita"]:
         st.success(
-            f"Como t = {_br(_to, 2)} > {_br(_tc, 3)} e o valor-p ({_pval_m}) é menor que α = {_br(ALPHA, 2)}, "
+            f"Como t = {_br(rm['t'], 2)} > {_br(rm['t_crit'], 3)} e o valor-p ({_pval_m}) é menor que α = {_br(ALPHA, 2)}, "
             f"**rejeitamos H₀**. Há evidência estatística, ao nível de {_alpha_rot} de significância, de que "
             "alunos de escola privada obtêm nota geral média maior que alunos de escola pública. "
             f"Estima-se que a diferença seja de {_br(rm['dif'], 1)} pontos, com IC {CONF:.0%} entre "
@@ -1217,8 +1527,10 @@ with tab_comparacao:
         )
     else:
         st.warning(
-            f"Como t = {_br(_to, 2)} ≤ {_br(_tc, 3)} e o valor-p ({_pval_m}) é maior ou igual a "
+            f"Como t = {_br(rm['t'], 2)} ≤ {_br(rm['t_crit'], 3)} e o valor-p ({_pval_m}) é maior ou igual a "
             f"α = {_br(ALPHA, 2)}, **não rejeitamos H₀**. Não há evidência estatística suficiente para afirmar "
             "que alunos de escola privada obtêm nota geral média maior que alunos de escola pública.",
             icon=":material/info:",
         )
+
+    
