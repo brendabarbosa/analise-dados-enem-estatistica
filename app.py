@@ -1264,7 +1264,7 @@ with tab_comparacao:
         icone=":material/functions:",
         variavel_md="Sexo (`TP_SEXO`), nominal binária",
         evento_md="o participante ser do sexo **Feminino**",
-        parametro_md="$p$ = proporção de mulheres entre os participantes do ENEM 2023 no RS",
+        parametro_md="$p$ = proporção de pessoas do sexo feminino entre os participantes do ENEM 2023 no RS",
         evento_expr=pl.col("TP_SEXO") == "F",
         p0=0.5,
         justificativa_md=(
@@ -1273,7 +1273,7 @@ with tab_comparacao:
             "qual sexo predomina."
         ),
         h0_rot="participação igual entre os sexos", h1_rot="participação diferente entre os sexos",
-        sujeito="mulheres entre os participantes", cor=CORES_SEXO["Feminino"],
+        sujeito="pessoas do sexo feminino entre os participantes", cor=CORES_SEXO["Feminino"],
         alpha=ALPHA, alpha_rot=_alpha_rot, n_pop=N_POP,
     )
 
@@ -1532,5 +1532,190 @@ with tab_comparacao:
             "que alunos de escola privada obtêm nota geral média maior que alunos de escola pública.",
             icon=":material/info:",
         )
+
+    # ========================================================
+    # (c) Análise final — amostra × população
+    # ========================================================
+    from statistics import NormalDist as _ND
+
+    st.divider()
+    st.subheader(":material/compare_arrows: 5. Análise final — comparação dos resultados da amostra com a população")
+    st.markdown(
+        "As inferências anteriores usaram **apenas a amostra**, como acontece na prática, quando a população não é conhecida. "
+        f"Neste trabalho, porém, a população completa ({_br(N_POP, 0)} participantes) está disponível. Por isso é possível "
+        "verificar se as estimativas e as decisões dos testes correspondem ao que de fato ocorre na população. "
+        "Os valores da população abaixo são **parâmetros**, e não estimativas: não têm erro amostral."
+    )
+
+    _pp = lambda v: _br(v * 100, 2) + "%"          # proporção → texto em %
+    _contem = lambda lo, v, hi: lo <= v <= hi
+
+    def _plot_ic_pop(titulo, est, lo, hi, pop, ref, ref_rot, cor, fmt, eixo):
+        """IC da amostra (barra), estimativa amostral (círculo), parâmetro populacional (losango) e valor de H₀ (tracejado)."""
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=[est], y=["Amostra"], mode="markers", name=f"Estimativa da amostra (IC {CONF:.0%})",
+            marker=dict(size=13, color=cor),
+            error_x=dict(type="data", symmetric=False, array=[hi - est], arrayminus=[est - lo],
+                         thickness=3, width=10, color=cor),
+            hovertemplate=f"Estimativa: {fmt(est)}<br>IC {CONF:.0%}: [{fmt(lo)}; {fmt(hi)}]<extra></extra>",
+        ))
+        fig.add_trace(go.Scatter(
+            x=[pop], y=["População"], mode="markers", name="Valor da população",
+            marker=dict(size=14, color="#111827", symbol="diamond"),
+            hovertemplate=f"População: {fmt(pop)}<extra></extra>",
+        ))
+        fig.add_vline(x=pop, line=dict(color="#111827", width=1, dash="dot"))
+        fig.add_vline(x=ref, line=dict(color="#D62728", width=1.5, dash="dash"),
+                      annotation_text=ref_rot, annotation_position="top")
+        fig.update_layout(
+            title=dict(text=titulo, x=0.5, xanchor="center", font=dict(size=14)),
+            xaxis=dict(title=eixo, fixedrange=True), yaxis=dict(fixedrange=True, categoryorder="array",
+                                                                 categoryarray=["População", "Amostra"]),
+            legend=dict(orientation="h", y=-0.35, x=0.5, xanchor="center"),
+            separators=",.", margin=dict(t=60, b=40, l=90, r=20), height=280,
+        )
+        st.plotly_chart(fig, width="stretch")
+
+    # ---------- valores populacionais ----------
+    _p_fem_pop = float((enem_participantes["TP_SEXO"] == "F").mean())
+    _p_bra_pop = float((enem_participantes["TP_COR_RACA"] == 1).mean())
+    _pop_geral = _notas_validas(enem_participantes)
+    _mu_priv_pop = float(_pop_geral.filter(pl.col("TP_ESCOLA") == 3)["NOTA_GERAL"].mean())
+    _mu_pub_pop = float(_pop_geral.filter(pl.col("TP_ESCOLA") == 2)["NOTA_GERAL"].mean())
+    _dif_pop = _mu_priv_pop - _mu_pub_pop
+
+    # ---------- 5.1 Sexo feminino ----------
+    st.markdown("##### 5.1 Participantes do sexo feminino (item 1)")
+    _fem_ok = _contem(res_fem["ic_inf"], _p_fem_pop, res_fem["ic_sup"])
+    _metricas([
+        ("Proporção na amostra (p̂)", _pp(res_fem["p_hat"]), None),
+        ("Proporção na população (p)", _pp(_p_fem_pop), None),
+        ("Diferença (p̂ − p)", _br((res_fem["p_hat"] - _p_fem_pop) * 100, 2) + " p.p.", None),
+        ("Distância de p até 50%", _br((_p_fem_pop - 0.5) * 100, 2) + " p.p.", None),
+    ])
+    _plot_ic_pop("Proporção de pessoas do sexo feminino: amostra × população", res_fem["p_hat"], res_fem["ic_inf"],
+                 res_fem["ic_sup"], _p_fem_pop, 0.5, "H₀: p = 0,5", CORES_SEXO["Feminino"], _pp, "Proporção")
+    _fem_ic_txt = (
+        f"O IC de {CONF:.0%} da amostra, [{_pp(res_fem['ic_inf'])}; {_pp(res_fem['ic_sup'])}], **contém** a proporção "
+        "da população, ou seja, o intervalo cumpriu seu papel de capturar o parâmetro."
+        if _fem_ok else
+        f"Com {CONF:.0%} de confiança, o IC da amostra é [{_pp(res_fem['ic_inf'])}; {_pp(res_fem['ic_sup'])}], e a "
+        f"proporção da população fica **apenas {_br(max(res_fem['ic_inf'] - _p_fem_pop, _p_fem_pop - res_fem['ic_sup']) * 100, 2)} "
+        "p.p. fora** do intervalo. Isso não indica defeito na amostra: por construção, cerca de "
+        f"{ALPHA:.0%} dos intervalos de {CONF:.0%} obtidos por amostras aleatórias não contêm o parâmetro, e este caso "
+        "fica muito próximo do limite. Com um nível de confiança maior (ex.: 99%), o intervalo passa a conter o valor da população."
+    )
+    st.markdown(
+        f"- **Decisão do teste confirmada:** na amostra, H₀ (p = 0,5) "
+        f"{'foi rejeitada' if res_fem['rejeita'] else 'não foi rejeitada'}. Na população, a proporção de pessoas do sexo feminino é "
+        f"**{_pp(_p_fem_pop)}**, ou seja, {_br((_p_fem_pop - 0.5) * 100, 1)} p.p. acima da paridade. A hipótese de "
+        "paridade é de fato falsa e a **presença feminina realmente é maior** entre os participantes do ENEM 2023 no RS: "
+        "cerca de 5 pessoas do sexo feminino para cada 3 do sexo masculino.  \n"
+        f"- **Precisão da estimativa:** a amostra estimou {_pp(res_fem['p_hat'])}, uma diferença de "
+        f"{_br(abs(res_fem['p_hat'] - _p_fem_pop) * 100, 2)} p.p. em relação à população"
+        + (f", dentro da margem de erro de ±{_br((res_fem['ic_sup'] - res_fem['p_hat']) * 100, 2)} p.p. do intervalo"
+           if _fem_ok else
+           f", pouco acima da margem de erro de ±{_br((res_fem['ic_sup'] - res_fem['p_hat']) * 100, 2)} p.p. do intervalo")
+        + f" e da mesma ordem da margem de erro prevista no dimensionamento da amostra ({MARGEM_ERRO_AMOSTRA:.0%}).  \n"
+        f"- **Intervalo de confiança:** {_fem_ic_txt}  \n"
+        "- **Magnitude:** a diferença entre o parâmetro e o valor de H₀ "
+        f"({_br((_p_fem_pop - 0.5) * 100, 1)} p.p.) é muito maior que o erro amostral "
+        f"({_br(abs(res_fem['p_hat'] - _p_fem_pop) * 100, 1)} p.p.). Por isso a conclusão é robusta: qualquer amostra "
+        "aleatória deste tamanho levaria, com altíssima probabilidade, à mesma decisão."
+    )
+
+    # ---------- 5.2 Brancos ----------
+    st.markdown("##### 5.2 Participantes autodeclarados brancos (item 2)")
+    _bra_ok = _contem(res_bra["ic_inf"], _p_bra_pop, res_bra["ic_sup"])
+    _ref_ok = _contem(res_bra["ic_inf"], P0_BRANCOS_CENSO, res_bra["ic_sup"])
+    _d_bra = _p_bra_pop - P0_BRANCOS_CENSO
+    # poder do teste bilateral para detectar a diferença real (p = valor populacional) com o n da amostra
+    _n_b = res_bra["n"]
+    _se0 = (P0_BRANCOS_CENSO * (1 - P0_BRANCOS_CENSO) / _n_b) ** 0.5
+    _se1 = (_p_bra_pop * (1 - _p_bra_pop) / _n_b) ** 0.5
+    _zc = res_bra["z_crit"]
+    _poder = (1 - _ND().cdf((P0_BRANCOS_CENSO + _zc * _se0 - _p_bra_pop) / _se1)
+              + _ND().cdf((P0_BRANCOS_CENSO - _zc * _se0 - _p_bra_pop) / _se1))
+    _z80 = _ND().inv_cdf(0.80)
+    _n80 = ((_zc * (P0_BRANCOS_CENSO * (1 - P0_BRANCOS_CENSO)) ** 0.5
+             + _z80 * (_p_bra_pop * (1 - _p_bra_pop)) ** 0.5) / abs(_d_bra)) ** 2
+    _metricas([
+        ("Proporção na amostra (p̂)", _pp(res_bra["p_hat"]), None),
+        ("Proporção na população (p)", _pp(_p_bra_pop), None),
+        ("Referência IBGE (p₀)", _pp(P0_BRANCOS_CENSO), "Censo Demográfico 2022 — população do RS"),
+        ("Diferença real (p − p₀)", _br(_d_bra * 100, 2) + " p.p.", None),
+        ("Poder do teste", f"{_poder:.0%}",
+         f"Probabilidade de rejeitar H₀ com n = {_br(_n_b, 0)} quando a proporção verdadeira é {_pp(_p_bra_pop)}."),
+    ])
+    _plot_ic_pop("Proporção de brancos: amostra × população × IBGE", res_bra["p_hat"], res_bra["ic_inf"],
+                 res_bra["ic_sup"], _p_bra_pop, P0_BRANCOS_CENSO, "IBGE (H₀)", CORES_RACA["Branca"], _pp, "Proporção")
+    st.markdown(
+        f"- **O que a amostra indicou:** p̂ = {_pp(res_bra['p_hat'])}, com IC de {CONF:.0%} "
+        f"[{_pp(res_bra['ic_inf'])}; {_pp(res_bra['ic_sup'])}]. "
+        + ("O intervalo **contém tanto o valor do IBGE quanto o valor da população**"
+           if _bra_ok and _ref_ok else
+           f"O intervalo {'contém' if _bra_ok else 'não contém'} o valor da população e "
+           f"{'contém' if _ref_ok else 'não contém'} o valor do IBGE")
+        + f", e H₀ {'foi rejeitada' if res_bra['rejeita'] else 'não foi rejeitada'}.  \n"
+        f"- **O que a população mostra:** a proporção real de brancos entre os participantes é **{_pp(_p_bra_pop)}**, "
+        f"que **não é exatamente igual** aos {_pp(P0_BRANCOS_CENSO)} do IBGE. A diferença é de "
+        f"{_br(abs(_d_bra) * 100, 2)} p.p. Em sentido estrito, portanto, **H₀ é falsa** na população.  \n"
+        "- **Não rejeitar H₀ não significa que H₀ é verdadeira.** O teste apenas concluiu que a amostra não traz "
+        "evidência suficiente contra p = p₀. "
+        + (f"Como sabemos que p ≠ p₀, a não rejeição corresponde tecnicamente a um **erro do tipo II**. "
+           if not res_bra["rejeita"] else "")
+        + f"Esse resultado é esperado: com n = {_br(_n_b, 0)}, o poder do teste para detectar uma diferença de "
+        f"apenas {_br(abs(_d_bra) * 100, 2)} p.p. é de cerca de **{_poder:.0%}**. Seriam necessários "
+        f"aproximadamente **{_br(_n80, 0)} participantes** para detectá-la com 80% de poder. A amostra foi dimensionada "
+        f"para uma margem de erro de {MARGEM_ERRO_AMOSTRA:.0%} e, por isso, não distingue diferenças menores do que essa.  \n"
+        f"- **Interpretação prática:** a diferença de {_br(abs(_d_bra) * 100, 2)} p.p. "
+        f"({_br(abs(_d_bra) / P0_BRANCOS_CENSO * 100, 1)}% do valor de referência) é **pequena e sem relevância "
+        "prática**. Além disso, os dois números medem grupos diferentes: o Censo 2022 abrange toda a população do RS, "
+        "de todas as idades, e o ENEM 2023 abrange apenas os inscritos que fizeram as provas. Não seria razoável "
+        "esperar igualdade exata. O resultado mostra que o **perfil racial dos participantes do ENEM é muito próximo "
+        f"ao do estado**, com leve predominância de brancos. A amostra também acertou o valor da população com "
+        f"precisão: diferença de {_br(abs(res_bra['p_hat'] - _p_bra_pop) * 100, 2)} p.p."
+    )
+
+    # ---------- 5.3 Escola privada × pública ----------
+    st.markdown("##### 5.3 Nota geral: escola privada × escola pública (item 4)")
+    _dif_ok = _contem(rm["ic_inf"], _dif_pop, rm["ic_sup"])
+    _priv_ok = _contem(rm["a"]["ic_inf"], _mu_priv_pop, rm["a"]["ic_sup"])
+    _pub_ok = _contem(rm["b"]["ic_inf"], _mu_pub_pop, rm["b"]["ic_sup"])
+    _plot_ic_pop("Diferença de nota geral (privada − pública): amostra × população", rm["dif"], rm["ic_inf"],
+                 rm["ic_sup"], _dif_pop, 0, "H₀: diferença = 0", CORES_ESCOLA["Privada"],
+                 lambda v: _br(v, 2), "Diferença de médias (pontos)")
+    st.markdown(
+        f"- **Decisão do teste confirmada:** na amostra, H₀ {'foi rejeitada' if rm['rejeita'] else 'não foi rejeitada'}. "
+        f"Na população, a nota geral média é **{_br(_mu_priv_pop, 2)}** na escola privada e **{_br(_mu_pub_pop, 2)}** na "
+        f"pública, com diferença de **{_br(_dif_pop, 2)} pontos**. A nota dos alunos vindos de escola privada "
+        "**realmente é maior**.  \n"
+        f"- **Precisão da estimativa:** a amostra estimou a diferença em {_br(rm['dif'], 2)} pontos, apenas "
+        f"{_br(abs(rm['dif'] - _dif_pop), 2)} pontos ({_br(abs(rm['dif'] - _dif_pop) / _dif_pop * 100, 1)}%) "
+        f"distante do valor real. O IC de {CONF:.0%} da diferença {'**contém**' if _dif_ok else '**não contém**'} a "
+        "diferença populacional"
+        + (", e os intervalos de cada grupo também contêm as respectivas médias da população." if _priv_ok and _pub_ok
+           else ".")
+        + "  \n"
+        f"- **Magnitude:** a diferença de cerca de {_br(_dif_pop, 0)} pontos é grande, equivalente a quase "
+        f"{_br(_dif_pop / _mu_pub_pop * 100, 0)}% da média da escola pública. Assim como no item 1, o efeito real é "
+        "muito maior que o erro amostral, e a conclusão do teste unilateral é robusta."
+    )
+
+    # ---------- Conclusão geral ----------
+    st.markdown("##### 5.4 Conclusão geral")
+    st.markdown(
+        "**A amostra aleatória simples representou bem a população.** Nas três análises, as estimativas da amostra "
+        f"ficaram próximas dos valores reais: diferença de {_br(abs(res_fem['p_hat'] - _p_fem_pop) * 100, 1)} p.p. "
+        f"para a proporção de pessoas do sexo feminino, {_br(abs(res_bra['p_hat'] - _p_bra_pop) * 100, 1)} p.p. para a de brancos e "
+        f"{_br(abs(rm['dif'] - _dif_pop), 1)} pontos para a diferença de notas entre os tipos de escola. "
+        "As conclusões substantivas também coincidem com a população: a **presença feminina é maior**, o **perfil "
+        "racial dos participantes é muito próximo ao do Censo** e os **alunos de escola privada têm nota geral "
+        "maior**. A única divergência formal está no item 2. Ali H₀ é falsa por uma diferença tão pequena que uma "
+        f"amostra de {_br(_n_b, 0)} participantes não teria poder para detectá-la. Isso é uma limitação conhecida do "
+        "tamanho amostral, e não um viés da amostra. Os resultados mostram que, com uma amostra de cerca de "
+        f"{_n_b / N_POP:.0%} da população, é possível tirar conclusões confiáveis sobre o todo."
+    )
 
     
